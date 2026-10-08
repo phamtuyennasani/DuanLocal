@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-09",
+  "framework": "Tauri 2 webview + vanilla HTML/CSS/JS",
+  "target": "crates/app/ui/index.html",
+  "palette": "ad-hoc dark hex in :root",
+  "font_stack": "system UI + ui-monospace",
+  "motion": "none",
+  "spacing": "ad-hoc",
+  "genre": "modern-minimal",
+  "scope": "component-scope (app dashboard — no macrostructure/nav/footer)",
+  "preserve": ["dark direction", "2-column layout", "no bundler"]
+}

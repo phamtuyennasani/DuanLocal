@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DevStack</title>
+<!-- Hallmark · scope: app-dashboard (component-scope) · genre: modern-minimal
+     theme: Cobalt-variant (dark) · tone: technical · accent: electric cobalt ~256° -->
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-name">devstack</span>
+    <span class="brand-version">0.1</span>
+  </div>
+  <div class="app-header-right">
+    <span class="status-chip" id="master-status">—</span>
+    <button class="btn btn-primary" id="btn-master">
+      <span class="btn-label">start</span>
+    </button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <section class="panel" aria-labelledby="services-head">
+    <div class="panel-head">
+      <h2 id="services-head">services</h2>
+      <span class="panel-meta" id="svc-count"></span>
+    </div>
+    <table class="svc-table">
+      <thead>
+        <tr>
+          <th class="col-dot"></th>
+          <th>service</th>
+          <th class="col-port">port</th>
+          <th class="col-action"></th>
+        </tr>
+      </thead>
+      <tbody id="services"></tbody>
+    </table>
+  </section>
+
+  <section class="panel panel-sites" aria-labelledby="sites-head">
+    <div class="panel-head">
+      <h2 id="sites-head">sites</h2>
+      <span class="panel-meta" id="site-count"></span>
+    </div>
+
+    <form class="add-form" id="add-form">
+      <input type="text" id="new-name" placeholder="name" autocomplete="off" spellcheck="false" required>
+      <input type="text" id="new-root" placeholder="~/Sites/demo" autocomplete="off" spellcheck="false" required>
+      <select id="new-php" aria-label="PHP version"></select>
+      <button type="submit" class="btn btn-primary btn-sm">add</button>
+    </form>
+
+    <div class="site-table-wrap">
+      <table class="site-table">
+        <thead>
+          <tr>
+            <th>site</th>
+            <th>domain</th>
+            <th class="col-php">php</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody id="sites"></tbody>
+      </table>
+      <div class="empty" id="sites-empty">
+        <p class="empty-line">no sites</p>
+        <p class="empty-hint"><code>name.test:8080</code></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel panel-logs" aria-labelledby="logs-head">
+    <div class="panel-head">
+      <h2 id="logs-head">logs</h2>
+      <div class="log-controls">
+        <select id="log-svc" aria-label="service"></select>
+        <label class="log-tail-toggle">
+          <input type="checkbox" id="log-tail" checked>
+          <span>tail</span>
+        </label>
+      </div>
+    </div>
+    <pre class="log" id="log" aria-live="polite" aria-label="log output"></pre>
+  </section>
+
+</main>
+
+<div class="toast-stack" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script>
+const { invoke } = window.__TAURI__.core;
+const { openUrl } = window.__TAURI__.opener;
+
+let config = null;
+let allRunning = false;
+
+const PORTS = { dnsmasq: '5353', mysqld: '3306', httpd: '8080' };
+
+async function refresh() {
+  try {
+    const [status, sites, versions, cfg] = await Promise.all([
+      invoke('get_status'),
+      invoke('get_sites'),
+      invoke('get_php_versions'),
+      invoke('get_config'),
+    ]);
+    config = cfg;
+    renderStatus(status);
+    renderSites(sites, versions);
+    fillPhpSelect(versions);
+    fillLogSvc(status);
+    updateMaster(status);
+  } catch (e) {
+    toast('refresh failed: ' + e, 'error');
+  }
+}
+
+function updateMaster(status) {
+  const core = ['dnsmasq', 'mysqld', 'httpd'];
+  const up = status.filter(s => core.includes(s.name) && s.running).length;
+  allRunning = up === core.length;
+  const el = document.getElementById('master-status');
+  el.textContent = `${up}/${core.length}`;
+  el.className = 'status-chip ' + (up === 0 ? 'idle' : up === core.length ? 'up' : 'partial');
+  document.getElementById('btn-master').querySelector('.btn-label').textContent =
+    allRunning ? 'stop' : 'start';
+}
+
+function renderStatus(list) {
+  const tbody = document.getElementById('services');
+  const running = list.filter(s => s.running).length;
+  document.getElementById('svc-count').textContent = `${running}/${list.length}`;
+
+  tbody.innerHTML = list.map(s => `
+    <tr class="svc-row ${s.running ? 'on' : ''}">
+      <td class="col-dot"><span class="dot ${s.running ? 'on' : ''}" aria-label="${s.running ? 'running' : 'stopped'}"></span></td>
+      <td class="svc-name">${s.name}</td>
+      <td class="svc-port">${PORTS[s.name] || ''}</td>
+      <td class="col-action">
+        <button class="btn btn-sm" data-svc="${s.name}" data-action="${s.running ? 'stop' : 'start'}">
+          ${s.running ? 'stop' : 'start'}
+        </button>
+      </td>
+    </tr>`).join('');
+
+  tbody.querySelectorAll('button').forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      b.dataset.state = 'loading';
+      const cmd = b.dataset.action === 'start' ? 'service_start' : 'service_stop';
+      try {
+        await invoke(cmd, { name: b.dataset.svc });
+      } catch (e) {
+        toast(e, 'error');
+      }
+      refresh();
+    };
+  });
+}
+
+function renderSites(sites, versions) {
+  const tbody = document.getElementById('sites');
+  const empty = document.getElementById('sites-empty');
+  const count = document.getElementById('site-count');
+  count.textContent = sites.length ? `${sites.length}` : '';
+
+  if (!sites.length) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = sites.map(s => `
+    <tr>
+      <td class="site-name">${esc(s.name)}</td>
+      <td>
+        <a href="#" class="site-domain" data-url="http${s.https ? 's' : ''}://${s.domain}:${s.https ? config.https_port : config.http_port}">
+          ${esc(s.domain)}<span class="domain-port">:${s.https ? config.https_port : config.http_port}</span>
+        </a>
+      </td>
+      <td class="col-php">
+        <select class="php-select" data-site="${esc(s.name)}" aria-label="PHP version for ${esc(s.name)}">
+          ${versions.map(v => `<option value="${esc(v)}" ${v === s.php ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+        </select>
+      </td>
+      <td class="col-actions">
+        <button class="btn btn-sm btn-icon" data-remove="${esc(s.name)}" aria-label="remove ${esc(s.name)}">×</button>
+      </td>
+    </tr>`).join('');
+
+  tbody.querySelectorAll('a[data-url]').forEach(a => {
+    a.onclick = (e) => { e.preventDefault(); openUrl(a.dataset.url); };
+  });
+  tbody.querySelectorAll('select[data-site]').forEach(sel => {
+    sel.onchange = async () => {
+      try {
+        await invoke('set_site_php', { name: sel.dataset.site, version: sel.value });
+        toast(`${sel.dataset.site} → php ${sel.value}`, 'success');
+      } catch (e) {
+        toast(e, 'error');
+      }
+      refresh();
+    };
+  });
+  tbody.querySelectorAll('[data-remove]').forEach(b => {
+    b.onclick = async () => {
+      if (!confirm(`remove ${b.dataset.remove}?`)) return;
+      try {
+        await invoke('remove_site', { name: b.dataset.remove });
+        toast(`${b.dataset.remove} removed`, 'success');
+      } catch (e) {
+        toast(e, 'error');
+      }
+      refresh();
+    };
+  });
+}
+
+function fillPhpSelect(versions) {
+  const sel = document.getElementById('new-php');
+  const cur = sel.value;
+  sel.innerHTML = versions.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+function fillLogSvc(statuses) {
+  const sel = document.getElementById('log-svc');
+  const cur = sel.value;
+  const names = ['httpd', 'mysqld', 'dnsmasq'];
+  statuses.forEach(s => {
+    if (s.name.startsWith('php-fpm-')) names.push(s.name);
+  });
+  sel.innerHTML = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  if (cur && names.includes(cur)) sel.value = cur;
+}
+
+document.getElementById('add-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('new-name').value.trim();
+  const root = document.getElementById('new-root').value.trim();
+  const php = document.getElementById('new-php').value;
+  if (!name || !root || !php) return;
+  const btn = e.target.querySelector('[type=submit]');
+  btn.disabled = true;
+  btn.dataset.state = 'loading';
+  try {
+    await invoke('add_site', { name, php, root, https: false });
+    document.getElementById('new-name').value = '';
+    document.getElementById('new-root').value = '';
+    toast(`${name}.${config.tld} added`, 'success');
+    refresh();
+  } catch (e) {
+    toast(e, 'error');
+  } finally {
+    btn.disabled = false;
+    delete btn.dataset.state;
+  }
+};
+
+document.getElementById('btn-master').onclick = async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    if (allRunning) {
+      await invoke('service_stop_all');
+      toast('stopped', 'success');
+    } else {
+      await invoke('service_start_all');
+      toast('started', 'success');
+    }
+  } catch (e) { toast(e, 'error'); }
+  btn.disabled = false;
+  refresh();
+};
+
+document.getElementById('log-svc').onchange = refreshLog;
+document.getElementById('log-tail').onchange = refreshLog;
+
+async function refreshLog() {
+  const svc = document.getElementById('log-svc').value;
+  const tail = document.getElementById('log-tail').checked;
+  try {
+    const text = await invoke('get_logs', { service: svc, lines: tail ? 300 : 2000 });
+    const log = document.getElementById('log');
+    log.textContent = text || '(no output)';
+    if (tail) log.scrollTop = log.scrollHeight;
+  } catch (e) {
+    toast(e, 'error');
+  }
+}
+
+function toast(msg, kind = 'info') {
+  const stack = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  el.textContent = msg;
+  stack.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  setTimeout(() => {
+    el.classList.remove('in');
+    setTimeout(() => el.remove(), 200);
+  }, 3000);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+refresh();
+setInterval(refresh, 3000);
+setInterval(() => {
+  if (document.getElementById('log-tail').checked) refreshLog();
+}, 3000);
+</script>
+</body>
+</html>

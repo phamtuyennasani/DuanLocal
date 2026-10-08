@@ -1,0 +1,23 @@
+[
+  {
+    "date": "2026-10-09",
+    "scope": "component-scope (app dashboard)",
+    "genre": "modern-minimal",
+    "theme": "Cobalt-variant (dark)",
+    "tone": "technical",
+    "palette": "oklch dark paper 11% · accent electric-cobalt 256° · ok phosphor-green 145°",
+    "type": "Space Grotesk display + Inter body + JetBrains Mono data",
+    "enrichment": "none",
+    "brief": "DevStack Tauri dashboard — personal dev environment manager, ops-console aesthetic"
+  },
+  {
+    "date": "2026-10-09",
+    "scope": "component-scope (app dashboard)",
+    "genre": "modern-minimal",
+    "tone": "technical",
+    "palette": "oklch dark · paper 12% · accent phosphor-green 145°",
+    "type": "JetBrains Mono + Inter",
+    "enrichment": "none",
+    "brief": "DevStack Tauri dashboard — initial Hallmark pass"
+  }
+]

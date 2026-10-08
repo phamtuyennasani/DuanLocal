@@ -1,0 +1,19 @@
+[package]
+name = "devstack-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+handlebars.workspace = true
+which.workspace = true
+nix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
