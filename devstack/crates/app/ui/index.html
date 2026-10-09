@@ -28,23 +28,33 @@
 
 <main class="app-main">
 
-  <section class="panel" aria-labelledby="services-head">
-    <div class="panel-head">
-      <h2 id="services-head">services</h2>
-      <span class="panel-meta" id="svc-count"></span>
-    </div>
-    <table class="svc-table">
-      <thead>
-        <tr>
-          <th class="col-dot"></th>
-          <th>service</th>
-          <th class="col-port">port</th>
-          <th class="col-action"></th>
-        </tr>
-      </thead>
-      <tbody id="services"></tbody>
-    </table>
-  </section>
+  <div class="col-left">
+    <section class="panel" aria-labelledby="services-head">
+      <div class="panel-head">
+        <h2 id="services-head">services</h2>
+        <span class="panel-meta" id="svc-count"></span>
+      </div>
+      <table class="svc-table">
+        <thead>
+          <tr>
+            <th class="col-dot"></th>
+            <th>service</th>
+            <th class="col-port">port</th>
+            <th class="col-action"></th>
+          </tr>
+        </thead>
+        <tbody id="services"></tbody>
+      </table>
+    </section>
+
+    <section class="panel panel-pkgs" aria-labelledby="pkgs-head">
+      <div class="panel-head">
+        <h2 id="pkgs-head">packages</h2>
+        <span class="panel-meta" id="pkg-count"></span>
+      </div>
+      <ul class="pkg-list" id="packages"></ul>
+    </section>
+  </div>
 
   <section class="panel panel-sites" aria-labelledby="sites-head">
     <div class="panel-head">
@@ -99,19 +109,23 @@
 <script>
 const { invoke } = window.__TAURI__.core;
 const { openUrl } = window.__TAURI__.opener;
+const { listen } = window.__TAURI__.event;
 
 let config = null;
 let allRunning = false;
+// in-flight installs: package name → phase label
+const installing = {};
 
 const PORTS = { dnsmasq: '5353', mysqld: '3306', httpd: '8080' };
 
 async function refresh() {
   try {
-    const [status, sites, versions, cfg] = await Promise.all([
+    const [status, sites, versions, cfg, pkgs] = await Promise.all([
       invoke('get_status'),
       invoke('get_sites'),
       invoke('get_php_versions'),
       invoke('get_config'),
+      invoke('get_packages'),
     ]);
     config = cfg;
     renderStatus(status);
@@ -119,15 +133,17 @@ async function refresh() {
     fillPhpSelect(versions);
     fillLogSvc(status);
     updateMaster(status);
+    renderPackages(pkgs);
   } catch (e) {
     toast('refresh failed: ' + e, 'error');
   }
 }
 
 function updateMaster(status) {
-  const core = ['dnsmasq', 'mysqld', 'httpd'];
+  // core services differ per OS (no dnsmasq on Windows)
+  const core = ['mysqld', 'httpd'].filter(c => status.some(s => s.name === c));
   const up = status.filter(s => core.includes(s.name) && s.running).length;
-  allRunning = up === core.length;
+  allRunning = up === core.length && core.length > 0;
   const el = document.getElementById('master-status');
   el.textContent = `${up}/${core.length}`;
   el.className = 'status-chip ' + (up === 0 ? 'idle' : up === core.length ? 'up' : 'partial');
@@ -144,7 +160,7 @@ function renderStatus(list) {
     <tr class="svc-row ${s.running ? 'on' : ''}">
       <td class="col-dot"><span class="dot ${s.running ? 'on' : ''}" aria-label="${s.running ? 'running' : 'stopped'}"></span></td>
       <td class="svc-name">${s.name}</td>
-      <td class="svc-port">${PORTS[s.name] || ''}</td>
+      <td class="svc-port">${PORTS[s.name] || phpPort(s.name)}</td>
       <td class="col-action">
         <button class="btn btn-sm" data-svc="${s.name}" data-action="${s.running ? 'stop' : 'start'}">
           ${s.running ? 'stop' : 'start'}
@@ -238,7 +254,7 @@ function fillLogSvc(statuses) {
   const cur = sel.value;
   const names = ['httpd', 'mysqld', 'dnsmasq'];
   statuses.forEach(s => {
-    if (s.name.startsWith('php-fpm-')) names.push(s.name);
+    if (s.name.startsWith('php-fpm-') || s.name.startsWith('php-cgi-')) names.push(s.name);
   });
   sel.innerHTML = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
   if (cur && names.includes(cur)) sel.value = cur;
@@ -317,6 +333,109 @@ function esc(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
+
+// php-cgi-8.3 → 9083 ; php-fpm-8.3 → '' (unix socket on macOS)
+function phpPort(name) {
+  const m = name.match(/^php-cgi-(\d+)\.(\d+)$/);
+  return m ? String(9000 + (+m[1]) * 100 + (+m[2])) : '';
+}
+
+/* ── packages panel ─────────────────────────────── */
+function renderPackages(pkgs) {
+  const ul = document.getElementById('packages');
+  const count = document.getElementById('pkg-count');
+  const installed = pkgs.filter(p => p.installed).length;
+  count.textContent = pkgs.length ? `${installed}/${pkgs.length}` : '';
+
+  if (!pkgs.length) {
+    ul.innerHTML = '<li class="pkg-empty">checking…</li>';
+    return;
+  }
+
+  // sort: installed first, then php, then others — stable by name desc for php
+  const order = { php: 0, mariadb: 1, httpd: 2, other: 3 };
+  const sorted = [...pkgs].sort((a, b) => {
+    if (a.installed !== b.installed) return a.installed ? -1 : 1;
+    if (a.kind !== b.kind) return (order[a.kind] ?? 9) - (order[b.kind] ?? 9);
+    return b.name.localeCompare(a.name, undefined, { numeric: true });
+  });
+
+  ul.innerHTML = sorted.map(p => {
+    const busy = installing[p.name];
+    const state = busy
+      ? `<span class="pkg-state">${esc(busy)}</span>`
+      : p.installed
+        ? `<span class="pkg-state">installed</span>`
+        : '';
+    const action = busy
+      ? `<button class="btn btn-sm" disabled>…</button>`
+      : p.installed
+        ? `<button class="btn btn-sm" data-uninstall="${esc(p.name)}">remove</button>`
+        : `<button class="btn btn-sm btn-primary" data-install="${esc(p.name)}">install</button>`;
+    const phase = busy ? `data-phase="${esc(busy)}"` : (busy === 'error' ? 'data-phase="error"' : '');
+    return `
+      <li class="pkg-item ${p.installed ? 'on' : ''}" ${phase}>
+        <span class="pkg-name">
+          ${esc(p.name)}
+          <span class="pkg-kind">${esc(p.kind)}</span>
+        </span>
+        ${state}
+        ${action}
+      </li>`;
+  }).join('');
+
+  ul.querySelectorAll('[data-install]').forEach(b => {
+    b.onclick = () => startInstall(b.dataset.install);
+  });
+  ul.querySelectorAll('[data-uninstall]').forEach(b => {
+    b.onclick = async () => {
+      if (!confirm(`remove ${b.dataset.uninstall}?`)) return;
+      try {
+        await invoke('uninstall_package', { name: b.dataset.uninstall });
+        toast(`${b.dataset.uninstall} removed`, 'success');
+      } catch (e) {
+        toast(e, 'error');
+      }
+      refresh();
+    };
+  });
+}
+
+function startInstall(name) {
+  installing[name] = 'queued';
+  refreshPackages();
+  invoke('install_package', { name }).catch(e => {
+    delete installing[name];
+    toast(e, 'error');
+    refreshPackages();
+  });
+}
+
+// redraw only the package list (keeps in-flight labels between refreshes)
+async function refreshPackages() {
+  try {
+    const pkgs = await invoke('get_packages');
+    renderPackages(pkgs);
+  } catch (e) { /* silent — main refresh will surface */ }
+}
+
+// progress events from the background install thread
+listen('install-progress', ev => {
+  const { package: name, phase, msg } = ev.payload || {};
+  if (!name) return;
+  if (phase === 'downloading' || phase === 'resolving' || phase === 'extracting') {
+    installing[name] = phase === 'downloading' ? msg : phase + '…';
+  } else if (phase === 'done' || phase === 'installed') {
+    delete installing[name];
+    toast(`${name} installed`, 'success');
+    refresh();
+    return;
+  } else if (phase === 'error') {
+    delete installing[name];
+    toast(`${name}: ${msg}`, 'error');
+  }
+  refreshPackages();
+});
 
 refresh();
 setInterval(refresh, 3000);

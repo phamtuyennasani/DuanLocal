@@ -1,3 +1,5 @@
+#![cfg(target_os = "windows")]
+
 use std::process::Command;
 
 /// Elevate the current process via UAC.

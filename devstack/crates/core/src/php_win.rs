@@ -13,28 +13,49 @@ pub fn php_cgi_port(version: &str) -> u16 {
     crate::provider::php_cgi_port(version)
 }
 
-/// Write a php.ini for a version under etc/php/{ver}/php.ini
+/// Write a php.ini for a version under etc/php/{ver}/php.ini.
+/// extension_dir is absolute (relative "ext" resolves against the CWD of the
+/// spawning process — unreliable when launched from the GUI).
 pub fn ensure_php_ini(version: &str, paths: &crate::paths::Paths) -> crate::Result<()> {
     let dir = paths.php_ini_dir(version);
     std::fs::create_dir_all(&dir)?;
     let ini = dir.join("php.ini");
-    if !ini.exists() {
+    // Always regenerate — this file is devstack-managed, not user-edited.
+    // Keeping it unconditional means new defaults roll out on next setup/install.
+    {
+        let ext_dir = crate::vendor::vendor_dir(paths)
+            .join(format!("php-{version}"))
+            .join("ext")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        // CA bundle lives next to php-cgi.exe extras if present; php.net NTS zips
+        // don't ship one, so point at the bundled curl-ca-bundle if we add it.
+        // Leave openssl/curl to system defaults if absent.
         std::fs::write(
             ini,
-            r#"[PHP]
+            format!(
+                r#"[PHP]
 memory_limit = 256M
 error_reporting = E_ALL
 display_errors = On
 display_startup_errors = On
 log_errors = On
 date.timezone = UTC
-extension_dir = "ext"
+extension_dir = "{ext_dir}"
+
+; php-cgi is compiled with force-cgi-redirect — mod_proxy_fcgi does not set
+; REDIRECT_STATUS, so php-cgi refuses to run ("Security Alert!") unless we
+; turn the check off here. Safe: php-cgi only listens on 127.0.0.1.
+cgi.force_redirect = 0
+cgi.fix_pathinfo = 1
 
 [opcache]
 opcache.enable = 1
 opcache.enable_cli = 1
 opcache.memory_consumption = 128
-"#,
+"#
+            ),
         )?;
     }
     Ok(())

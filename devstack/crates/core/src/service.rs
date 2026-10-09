@@ -1,5 +1,7 @@
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::thread;
+#[cfg(unix)]
 use std::time::Duration;
 
 /// Kind of managed service.
@@ -36,16 +38,27 @@ pub fn spawn_daemon(
         .open(log_file)?;
     let log_err = log.try_clone()?;
 
-    let child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()
-        .map_err(|e| crate::Error::ServiceFailed {
-            name: program.into(),
-            reason: e.to_string(),
-        })?;
+        .stderr(Stdio::from(log_err));
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP —
+        // daemon survives our exit and never shows a console window.
+        const DETACHED: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const NEW_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED | CREATE_NO_WINDOW | NEW_GROUP);
+    }
+
+    let child = cmd.spawn().map_err(|e| crate::Error::ServiceFailed {
+        name: program.into(),
+        reason: e.to_string(),
+    })?;
 
     let pid = child.id();
     std::fs::write(pid_file, pid.to_string())?;
@@ -74,8 +87,11 @@ fn pid_alive(pid: i32) -> bool {
 
 #[cfg(windows)]
 fn pid_alive(pid: i32) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}")])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
         .unwrap_or(false)
@@ -112,11 +128,14 @@ pub fn stop_daemon(pid_file: &std::path::Path, timeout_secs: u64) -> crate::Resu
 
 #[cfg(windows)]
 pub fn stop_daemon(pid_file: &std::path::Path, _timeout_secs: u64) -> crate::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let text = std::fs::read_to_string(pid_file)
         .map_err(|_| crate::Error::ServiceNotRunning(pid_file.display().to_string()))?;
     let pid = text.trim();
     Command::new("taskkill")
         .args(["/PID", pid, "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok();
     let _ = std::fs::remove_file(pid_file);

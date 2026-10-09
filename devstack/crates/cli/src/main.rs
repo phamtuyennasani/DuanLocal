@@ -135,7 +135,7 @@ fn cmd_setup(paths: &Paths) -> anyhow::Result<()> {
         }
 
         httpd_win::write_httpd_conf(paths, config.http_port)?;
-        println!("  ✓ httpd.conf (mod_fcgid)");
+        println!("  ✓ httpd.conf (mod_proxy_fcgi)");
 
         mysql::write_my_cnf(paths, config.mysql_port)?;
         mysql::init_datadir(paths)?;
@@ -193,15 +193,8 @@ fn cmd_up(paths: &Paths) -> anyhow::Result<()> {
             mysql::start_mysqld(paths)?;
             println!("✓ mysqld");
         }
-        // start php-cgi for each version used
-        let versions: std::collections::BTreeSet<String> =
-            registry.sites.values().map(|s| s.php.clone()).collect();
-        for v in versions {
-            if !service::is_running(&paths.pid_file(&format!("php-cgi-{v}"))) {
-                php_win::start_php_cgi(&v, paths)?;
-                println!("✓ php-cgi {v} :{}", provider::php_cgi_port(&v));
-            }
-        }
+        // No php-cgi daemon needed — PHP runs as classic CGI via Action/ScriptAlias
+        // (mod_actions supplies the real SCRIPT_FILENAME mod_proxy_fcgi can't).
         if !service::is_running(&paths.pid_file("httpd")) {
             httpd_win::start_httpd(paths)?;
             println!("✓ httpd");
@@ -230,7 +223,7 @@ fn cmd_down(paths: &Paths) -> anyhow::Result<()> {
     // stop all php-* pid files
     if let Ok(rd) = std::fs::read_dir(paths.run_dir()) {
         for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy();
+            let name = e.file_name().to_string_lossy().to_string();
             if (name.starts_with("php-fpm-") || name.starts_with("php-cgi-"))
                 && name.ends_with(".pid")
             {
@@ -340,21 +333,10 @@ fn cmd_site(paths: &Paths, cmd: SiteCmd) -> anyhow::Result<()> {
 
 // ── php ──────────────────────────────────────────────────────────────────────
 
-fn cmd_php(paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
+fn cmd_php(_paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
     use devstack_core::*;
     match cmd {
         PhpCmd::List => {
-            #[cfg(target_os = "macos")]
-            {
-                let vers = php::detect_brew_phps(paths)?;
-                if vers.is_empty() {
-                    println!("no brew PHP found — brew tap shivammathur/php");
-                } else {
-                    for v in vers {
-                        println!("  php@{}  ({})", v.version, v.fpm_bin.display());
-                    }
-                }
-            }
             #[cfg(target_os = "windows")]
             {
                 let vendored = vendor::list_vendored();
@@ -369,6 +351,17 @@ fn cmd_php(paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            {
+                let vers = php::detect_brew_phps(_paths)?;
+                if vers.is_empty() {
+                    println!("no brew PHP found — brew tap shivammathur/php");
+                } else {
+                    for v in vers {
+                        println!("  php@{}  ({})", v.version, v.fpm_bin.display());
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -376,31 +369,44 @@ fn cmd_php(paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
 
 // ── install (Windows vendor downloads) ───────────────────────────────────────
 
+#[cfg(target_os = "windows")]
 fn cmd_install(paths: &Paths, package: &str) -> anyhow::Result<()> {
-    use devstack_core::*;
+    use devstack_core::vendor::{self, Progress};
+    use std::io::Write;
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        anyhow::bail!("`devctl install` is only supported on Windows — use brew on macOS");
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let url = match package {
-            "httpd" => vendor::urls::httpd().to_string(),
-            "mariadb" => vendor::urls::mariadb().to_string(),
-            p if p.starts_with("php-") => {
-                let ver = p.trim_start_matches("php-");
-                vendor::urls::php(ver)
+    let dest = vendor::install(paths, package, |p| match p {
+        Progress::Resolving => {
+            print!("resolving {package}…\r");
+            let _ = std::io::stdout().flush();
+        }
+        Progress::Downloading { got, total } => {
+            let mb = got as f64 / 1_048_576.0;
+            match total {
+                Some(t) => {
+                    let pct = (got as f64 / t as f64 * 100.0).min(100.0);
+                    print!("  {mb:.1} / {:.1} MB  ({pct:.0}%)\r", t as f64 / 1_048_576.0);
+                }
+                None => print!("  {mb:.1} MB\r"),
             }
-            _ => anyhow::bail!("unknown package: {package} — httpd | mariadb | php-X.Y"),
-        };
-        println!("downloading {package} …");
-        println!("  {url}");
-        println!("\n(todo: download + extract to {} — not yet implemented)",
-            vendor::vendor_dir(paths).display());
+            let _ = std::io::stdout().flush();
+        }
+        Progress::Extracting => println!("\nextracting…"),
+        Progress::Done(d) => println!("✓ {} → {}", package, d.display()),
+    })
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // If a PHP was just installed, drop a php.ini for it.
+    if package.starts_with("php-") {
+        let ver = package.trim_start_matches("php-");
+        devstack_core::php_win::ensure_php_ini(ver, paths).ok();
     }
+    let _ = dest;
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cmd_install(_paths: &Paths, package: &str) -> anyhow::Result<()> {
+    anyhow::bail!("`devctl install` is only supported on Windows — use brew on macOS")
 }
 
 // ── logs ─────────────────────────────────────────────────────────────────────
