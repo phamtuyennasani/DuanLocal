@@ -1,8 +1,16 @@
 use clap::{Parser, Subcommand};
-use devstack_core::{config::Config, paths::Paths, site::{Site, SiteRegistry}};
+use devstack_core::{
+    config::Config,
+    paths::Paths,
+    site::{Site, SiteRegistry},
+};
 
 #[derive(Parser)]
-#[command(name = "devctl", version, about = "DevStack — local dev environment manager")]
+#[command(
+    name = "devctl",
+    version,
+    about = "DevStack — local dev environment manager"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -51,6 +59,10 @@ enum SiteCmd {
         php: String,
         #[arg(long)]
         root: String,
+        /// public port — default from config (80). Use a ≥1024 port for a
+        /// dedicated bind (e.g. api.test:9000), no pf needed
+        #[arg(long)]
+        port: Option<u16>,
         #[arg(long)]
         https: bool,
     },
@@ -60,6 +72,12 @@ enum SiteCmd {
     List,
     /// Set PHP version for a site
     SetPhp { name: String, version: String },
+    /// Set a public port override, or `default` to use the global port (80)
+    SetPort {
+        name: String,
+        /// Port number or "default"
+        port: Option<u16>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -94,34 +112,34 @@ fn main() -> anyhow::Result<()> {
 // ── setup ────────────────────────────────────────────────────────────────────
 
 fn cmd_setup(paths: &Paths) -> anyhow::Result<()> {
-    use devstack_core::*;
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("SUDO_USER").is_some()
+        || std::env::var_os("USER").as_deref() == Some(std::ffi::OsStr::new("root"))
+    {
+        anyhow::bail!("do not run the full DevStack setup with sudo; open DevStack and approve its administrator prompt instead");
+    }
 
     paths.ensure_dirs()?;
     let config = Config::load(paths)?;
 
-    println!("Setting up devstack in {}", paths.root.display());
-
     #[cfg(target_os = "macos")]
     {
-        // DNS resolver + dnsmasq conf (needs sudo)
-        let dnsmasq_conf = dns::dnsmasq_conf_path(paths);
-        dns::setup_resolver(&config.tld, &dnsmasq_conf)?;
-        println!("  ✓ /etc/resolver/{} + dnsmasq conf", config.tld);
+        // User-owned runtime/configuration setup. Do not run this command through
+        // sudo: the packaged application uses its own native admin prompt only
+        // for /etc and pf changes.
+        devstack_core::setup::prepare_user(paths, &config, |message| println!("  … {message}"))?;
+        println!("  ✓ user-owned runtime files prepared");
 
-        httpd::write_httpd_conf(paths, config.http_port)?;
-        println!("  ✓ httpd.conf");
-
-        mysql::write_my_cnf(paths, config.mysql_port)?;
-        mysql::init_datadir(paths)?;
-        println!("  ✓ my.cnf + datadir");
-
-        for pv in php::detect_brew_phps(paths)? {
-            php::write_fpm_pool_conf(&pv.version, paths, config.ram_profile)?;
-            php::ensure_php_ini(&pv.version, paths)?;
-            println!("  ✓ php-fpm pool for {}", pv.version);
+        let redirects = devstack_core::setup::port_redirects(paths, &config)?;
+        match devstack_core::elevate_macos::run_with_admin_dialog(&config.tld, &redirects)? {
+            devstack_core::elevate_macos::AdminOutcome::Applied
+            | devstack_core::elevate_macos::AdminOutcome::AlreadyConfigured => {
+                println!("  ✓ local domains and public ports enabled");
+            }
+            devstack_core::elevate_macos::AdminOutcome::Cancelled => {
+                println!("  ! administrator approval cancelled — retry from DevStack when ready");
+            }
         }
-
-        dns::flush_dns_cache()?;
     }
 
     #[cfg(target_os = "windows")]
@@ -164,6 +182,9 @@ fn cmd_up(paths: &Paths) -> anyhow::Result<()> {
     vhost::VhostRenderer::new().render_all(&registry, &config, paths)?;
 
     #[cfg(target_os = "macos")]
+    sync_httpd_binds(paths, &registry, &config)?;
+
+    #[cfg(target_os = "macos")]
     {
         if !service::is_running(&paths.pid_file("dnsmasq")) {
             dns::start_dnsmasq(paths)?;
@@ -201,7 +222,12 @@ fn cmd_up(paths: &Paths) -> anyhow::Result<()> {
         }
     }
 
-    println!("\n→ http://*.{tld}:{port}", tld = config.tld, port = config.http_port);
+    let port_display = if config.public_port == 80 {
+        String::new()
+    } else {
+        format!(":{}", config.public_port)
+    };
+    println!("\n→ http://*.{tld}{port_display}", tld = config.tld);
     Ok(())
 }
 
@@ -260,8 +286,11 @@ fn cmd_status(paths: &Paths) -> anyhow::Result<()> {
             let n = e.file_name().to_string_lossy().to_string();
             if (n.starts_with("php-fpm-") || n.starts_with("php-cgi-")) && n.ends_with(".pid") {
                 let running = service::is_running(&e.path());
-                println!("  {:<20} {}", n.trim_end_matches(".pid"),
-                    if running { "●" } else { "○" });
+                println!(
+                    "  {:<20} {}",
+                    n.trim_end_matches(".pid"),
+                    if running { "●" } else { "○" }
+                );
             }
         }
     }
@@ -276,11 +305,25 @@ fn cmd_site(paths: &Paths, cmd: SiteCmd) -> anyhow::Result<()> {
     let config = Config::load(paths)?;
 
     match cmd {
-        SiteCmd::Add { name, php, root, https } => {
+        SiteCmd::Add {
+            name,
+            php,
+            root,
+            port,
+            https,
+        } => {
             let root = std::path::PathBuf::from(shellexpand(&root));
-            registry.add(Site { name: name.clone(), root, php, https })?;
+            registry.add(Site {
+                name: name.clone(),
+                root,
+                php,
+                port,
+                https,
+            })?;
             registry.save(paths)?;
             vhost::VhostRenderer::new().render_all(&registry, &config, paths)?;
+            #[cfg(target_os = "macos")]
+            sync_httpd_binds(paths, &registry, &config)?;
 
             #[cfg(target_os = "windows")]
             {
@@ -300,6 +343,20 @@ fn cmd_site(paths: &Paths, cmd: SiteCmd) -> anyhow::Result<()> {
             registry.save(paths)?;
             let _ = std::fs::remove_file(paths.vhosts_dir().join(format!("{name}.conf")));
 
+            // clean up the site's log files too — access/error/ssl variants
+            let domain = format!("{}.{}", name, config.tld);
+            for pat in [
+                format!("{domain}-access.log"),
+                format!("{domain}-error.log"),
+                format!("{domain}-ssl-access.log"),
+                format!("{domain}-ssl-error.log"),
+            ] {
+                let _ = std::fs::remove_file(paths.logs_dir().join(&pat));
+            }
+
+            #[cfg(target_os = "macos")]
+            sync_httpd_binds(paths, &registry, &config)?;
+
             #[cfg(target_os = "windows")]
             {
                 let _ = hosts::remove_site(&name, &config.tld);
@@ -312,21 +369,86 @@ fn cmd_site(paths: &Paths, cmd: SiteCmd) -> anyhow::Result<()> {
             if registry.sites.is_empty() {
                 println!("no sites — `devctl site add <name> --php <ver> --root <path>`");
             } else {
-                println!("{:<16} {:<30} {:<6} {}", "NAME", "DOMAIN", "PHP", "ROOT");
+                println!(
+                    "{:<16} {:<30} {:<6} {:<6} {}",
+                    "NAME", "DOMAIN", "PORT", "PHP", "ROOT"
+                );
                 for s in registry.sites.values() {
-                    println!("{:<16} {:<30} {:<6} {}",
-                        s.name, s.domain(&config.tld), s.php, s.root.display());
+                    let port = s
+                        .port
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| config.public_port.to_string());
+                    println!(
+                        "{:<16} {:<30} {:<6} {:<6} {}",
+                        s.name,
+                        s.domain(&config.tld),
+                        port,
+                        s.php,
+                        s.root.display()
+                    );
                 }
             }
         }
         SiteCmd::SetPhp { name, version } => {
-            let site = registry.sites.get_mut(&name)
+            let site = registry
+                .sites
+                .get_mut(&name)
                 .ok_or_else(|| devstack_core::Error::SiteNotFound(name.clone()))?;
             site.php = version;
             registry.save(paths)?;
             vhost::VhostRenderer::new().render_all(&registry, &config, paths)?;
             println!("✓ {name} → php {}", registry.sites[&name].php);
         }
+        SiteCmd::SetPort { name, port } => {
+            if matches!(port, Some(value) if value < 1024) {
+                anyhow::bail!(
+                    "custom site ports must be 1024 or higher; use the default port for 80"
+                );
+            }
+            let site = registry
+                .sites
+                .get_mut(&name)
+                .ok_or_else(|| devstack_core::Error::SiteNotFound(name.clone()))?;
+            site.port = port;
+            registry.save(paths)?;
+            vhost::VhostRenderer::new().render_all(&registry, &config, paths)?;
+            #[cfg(target_os = "macos")]
+            sync_httpd_binds(paths, &registry, &config)?;
+            match port {
+                Some(p) => println!("✓ {name} → :{p}"),
+                None => println!("✓ {name} → default :{}", config.public_port),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Keep httpd.conf's Listen set in sync with site ports.
+/// Public :80 is forwarded to the unprivileged internal Apache bind.
+#[cfg(target_os = "macos")]
+fn sync_httpd_binds(
+    paths: &Paths,
+    registry: &devstack_core::site::SiteRegistry,
+    config: &devstack_core::config::Config,
+) -> anyhow::Result<()> {
+    use devstack_core::*;
+    let mut binds = vec![config.http_port];
+    for s in registry.sites.values() {
+        if let Some(p) = s.port {
+            if p >= 1024 {
+                binds.push(p);
+            }
+        }
+    }
+    // any https-enabled site → also Listen on the TLS bind port
+    if registry.sites.values().any(|s| s.https) {
+        binds.push(config.https_port);
+    }
+    httpd::write_httpd_conf(paths, &binds)?;
+    // reload apache if running so binds take effect now
+    if service::is_running(&paths.pid_file("httpd")) {
+        let _ = httpd::stop_httpd(paths);
+        httpd::start_httpd(paths)?;
     }
     Ok(())
 }
@@ -340,9 +462,7 @@ fn cmd_php(_paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
             #[cfg(target_os = "windows")]
             {
                 let vendored = vendor::list_vendored();
-                let phps: Vec<_> = vendored.iter()
-                    .filter(|n| n.starts_with("php-"))
-                    .collect();
+                let phps: Vec<_> = vendored.iter().filter(|n| n.starts_with("php-")).collect();
                 if phps.is_empty() {
                     println!("no vendored PHP — `devctl install php-8.3`");
                 } else {
@@ -353,9 +473,9 @@ fn cmd_php(_paths: &Paths, cmd: PhpCmd) -> anyhow::Result<()> {
             }
             #[cfg(target_os = "macos")]
             {
-                let vers = php::detect_brew_phps(_paths)?;
+                let vers = php::detect_phps(_paths)?;
                 if vers.is_empty() {
-                    println!("no brew PHP found — brew tap shivammathur/php");
+                    println!("no PHP found — `devctl install php-8.4`");
                 } else {
                     for v in vers {
                         println!("  php@{}  ({})", v.version, v.fpm_bin.display());
@@ -384,7 +504,10 @@ fn cmd_install(paths: &Paths, package: &str) -> anyhow::Result<()> {
             match total {
                 Some(t) => {
                     let pct = (got as f64 / t as f64 * 100.0).min(100.0);
-                    print!("  {mb:.1} / {:.1} MB  ({pct:.0}%)\r", t as f64 / 1_048_576.0);
+                    print!(
+                        "  {mb:.1} / {:.1} MB  ({pct:.0}%)\r",
+                        t as f64 / 1_048_576.0
+                    );
                 }
                 None => print!("  {mb:.1} MB\r"),
             }
@@ -404,9 +527,42 @@ fn cmd_install(paths: &Paths, package: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-fn cmd_install(_paths: &Paths, package: &str) -> anyhow::Result<()> {
-    anyhow::bail!("`devctl install` is only supported on Windows — use brew on macOS")
+#[cfg(target_os = "macos")]
+fn cmd_install(paths: &Paths, package: &str) -> anyhow::Result<()> {
+    use devstack_core::vendor_mac::Progress;
+    use std::io::Write;
+
+    let pkg = package.to_string();
+    let dest = devstack_core::vendor_mac::install(paths, package, move |p| match p {
+        Progress::Resolving => {
+            print!("resolving {pkg}…\r");
+            let _ = std::io::stdout().flush();
+        }
+        Progress::Downloading { got, total } => {
+            let mb = got as f64 / 1_048_576.0;
+            match total {
+                Some(t) => {
+                    let pct = (got as f64 / t as f64 * 100.0).min(100.0);
+                    print!(
+                        "  {mb:.1} / {:.1} MB  ({pct:.0}%)   \r",
+                        t as f64 / 1_048_576.0
+                    );
+                }
+                None => print!("  {mb:.1} MB   \r"),
+            }
+            let _ = std::io::stdout().flush();
+        }
+        Progress::Extracting => println!("\nextracting…"),
+        Progress::Done(d) => println!("✓ {pkg} → {}", d.display()),
+    })
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _ = dest;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn cmd_install(_paths: &Paths, _package: &str) -> anyhow::Result<()> {
+    anyhow::bail!("`devctl install` is only supported on macOS and Windows")
 }
 
 // ── logs ─────────────────────────────────────────────────────────────────────
@@ -420,11 +576,15 @@ fn cmd_logs(paths: &Paths, service: &str, follow: bool) -> anyhow::Result<()> {
     {
         // tail not native on Windows — use PowerShell Get-Content -Wait
         let mut cmd = std::process::Command::new("powershell");
-        cmd.args(["-NoProfile", "-Command",
-            &format!("Get-Content -Path '{}' -Tail 100{}",
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Get-Content -Path '{}' -Tail 100{}",
                 file.display(),
                 if follow { " -Wait" } else { "" }
-            )]);
+            ),
+        ]);
         let status = cmd.status()?;
         std::process::exit(status.code().unwrap_or(0));
     }

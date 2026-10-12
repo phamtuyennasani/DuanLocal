@@ -73,7 +73,7 @@ EOF
 
 # 5. vhost
 cat > "$DEVSTACK_DIR/etc/vhosts.d/demo.conf" <<EOF
-<VirtualHost *:8080>
+<VirtualHost *:80>
     ServerName demo.$TLD
     DocumentRoot "$HOME/Sites/demo"
     <Directory "$HOME/Sites/demo">
@@ -93,7 +93,7 @@ HTTPD_ROOT="$PREFIX/opt/httpd"
 MOD="$HTTPD_ROOT/lib/httpd/modules"
 {
     echo "ServerRoot \"$HTTPD_ROOT\""
-    echo "Listen 8080"
+    echo "Listen 80"
     for m in mpm_event dir mime log_config authz_core authz_host unixd alias rewrite proxy proxy_fcgi socache_shmcb setenvif headers negotiation autoindex reqtimeout env; do
         so="$MOD/mod_$m.so"
         [ -f "$so" ] && echo "LoadModule ${m}_module $so"
@@ -129,5 +129,5 @@ echo "==> starting httpd"
 echo "==> done."
 echo ""
 echo "If this is your first run, also run:  sudo $0"
-echo "Then test:  curl -s http://demo.$TLD:8080 | head"
+echo "Then test:  curl -s http://demo.$TLD/ | head"
 echo "Stop all:   $0 --stop"

@@ -11,6 +11,8 @@ tauri-build = { version = "2", features = [] }
 devstack-core = { path = "../core" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk", "network"] }

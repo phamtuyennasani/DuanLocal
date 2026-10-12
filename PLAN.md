@@ -49,7 +49,7 @@
 | PHP multi-version | **php-fpm mỗi version**, listen unix socket `run/php-fpm-8.3.sock`, `pm=ondemand` | Ondemand = gần 0 RAM khi idle |
 | Gán PHP per-site | Apache `mod_proxy_fcgi` + `FilesMatch` trỏ socket của version tương ứng | Mỗi site chọn PHP riêng — tốt hơn Laragon (switch global). Điểm bán hàng |
 | Tên miền ảo | **dnsmasq wildcard `*.test` → 127.0.0.1** + `/etc/resolver/test` | Thêm site = chỉ tạo vhost, không đụng /etc/hosts nữa. Sudo đúng 1 lần lúc setup |
-| Port 80 | Mặc định Apache **8080** (`site.test:8080`). Optional: pfctl redirect 80→8080 | Tránh chạy app bằng root |
+| Port 80 | Mặc định truy cập bằng **80** (`site.test`). Apache dùng bind nội bộ không đặc quyền và pf chuyển tiếp 80 vào đó | Không cần chạy app bằng root |
 | Quyền root | Gom hết vào **`devctl setup` chạy sudo 1 lần** (resolver, dnsmasq daemon, optional pf) | Sau setup app chạy hoàn toàn non-root |
 | MariaDB | `mariadbd` datadir riêng trong app dir, `innodb_buffer_pool_size=128M` | Nhẹ hơn MySQL; pool nhỏ đủ cho local dev |
 
@@ -81,7 +81,7 @@ Chứng minh pipeline chạy được trước khi viết code.
 - [ ] `brew install httpd mariadb dnsmasq shivammathur/php/php@8.3`
 - [ ] Tự tay viết httpd.conf tối thiểu + php-fpm conf + 1 vhost trỏ socket
 - [ ] Setup `/etc/resolver/test` + dnsmasq wildcard `*.test`
-- [ ] Verify: `curl http://demo.test:8080` render phpinfo đúng version
+- [ ] Verify: `curl http://demo.test/` render phpinfo đúng version
 - [ ] Ghi chú các bẫy: Apple Silicon `/opt/homebrew` vs Intel `/usr/local`, module paths, quyền socket dir
 - Deliverable: shell script spike + file notes
 

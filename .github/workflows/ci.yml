@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    defaults:
+      run:
+        working-directory: devstack
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: devstack
+      - name: Install Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --version '^2' --locked
+      - name: Prepare macOS bundle resource
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --locked -p devctl
+          mkdir -p crates/app/resources
+          cp target/release/devctl crates/app/resources/devctl
+          chmod 755 crates/app/resources/devctl
+      - name: Check workspace
+        run: cargo check --workspace --locked
+      - name: Test core
+        run: cargo test -p devstack-core --locked

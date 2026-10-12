@@ -66,8 +66,7 @@ opcache.memory_consumption = 128
 /// Sets PHP_FCGI_CHILDREN=0 (single process, ondemand-ish) and
 /// PHP_FCGI_MAX_REQUESTS=500.
 pub fn start_php_cgi(version: &str, paths: &crate::paths::Paths) -> crate::Result<()> {
-    let bin = find_php_cgi(version)
-        .ok_or_else(|| crate::Error::PhpNotInstalled(version.into()))?;
+    let bin = find_php_cgi(version).ok_or_else(|| crate::Error::PhpNotInstalled(version.into()))?;
     let port = php_cgi_port(version);
     let ini_dir = paths.php_ini_dir(version);
 

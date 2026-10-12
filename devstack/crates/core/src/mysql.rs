@@ -26,10 +26,22 @@ max_heap_table_size = 32M
 [client]
 port = {port}
 "#,
-        datadir = paths.mysql_data_dir().display().to_string().replace('\\', "/"),
+        datadir = paths
+            .mysql_data_dir()
+            .display()
+            .to_string()
+            .replace('\\', "/"),
         port = port,
-        pid = paths.pid_file("mysqld").display().to_string().replace('\\', "/"),
-        log = paths.log_file("mysqld").display().to_string().replace('\\', "/"),
+        pid = paths
+            .pid_file("mysqld")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+        log = paths
+            .log_file("mysqld")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
     );
 
     #[cfg(not(target_os = "windows"))]
@@ -77,27 +89,40 @@ fn mariadb_bin(name: &str) -> Option<PathBuf> {
             .or_else(|| which::which(format!("{name}.exe")).ok())
             .or_else(|| which::which(name).ok());
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        let prefix = crate::httpd::brew_prefix()?;
-        for formula in ["mariadb", "mysql"] {
-            let p = PathBuf::from(format!("{prefix}/opt/{formula}/bin/{name}"));
-            if p.exists() {
+        let paths = crate::paths::Paths::detect().ok()?;
+        // vendored MySQL 8.4 tarball: ~/.devstack/vendor/mysql/bin/<name>
+        for pkg in ["mysql", "mariadb"] {
+            if let Some(p) = crate::vendor_mac::find_vendored_bin(&paths, pkg, name) {
                 return Some(p);
             }
-            let opt = PathBuf::from(format!("{prefix}/opt"));
-            if let Ok(rd) = std::fs::read_dir(&opt) {
-                for e in rd.flatten() {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    if n.starts_with(&format!("{formula}@")) {
-                        let p = e.path().join("bin").join(name);
-                        if p.exists() {
-                            return Some(p);
+        }
+        // brew fallback for developer machines
+        if let Some(prefix) = crate::httpd::brew_prefix() {
+            for formula in ["mariadb", "mysql"] {
+                let p = PathBuf::from(format!("{prefix}/opt/{formula}/bin/{name}"));
+                if p.exists() {
+                    return Some(p);
+                }
+                let opt = PathBuf::from(format!("{prefix}/opt"));
+                if let Ok(rd) = std::fs::read_dir(&opt) {
+                    for e in rd.flatten() {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        if n.starts_with(&format!("{formula}@")) {
+                            let p = e.path().join("bin").join(name);
+                            if p.exists() {
+                                return Some(p);
+                            }
                         }
                     }
                 }
             }
         }
+        which::which(name).ok()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
         which::which(name).ok()
     }
 }
@@ -133,7 +158,10 @@ pub fn init_datadir(paths: &crate::paths::Paths) -> crate::Result<()> {
             })?;
         let status = std::process::Command::new(tool)
             .args([
-                &format!("--datadir={}", datadir.display().to_string().replace('/', "\\")),
+                &format!(
+                    "--datadir={}",
+                    datadir.display().to_string().replace('/', "\\")
+                ),
                 "--password=",
             ])
             .status()?;
@@ -145,12 +173,32 @@ pub fn init_datadir(paths: &crate::paths::Paths) -> crate::Result<()> {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
+        // vendored MySQL 8.4: mysqld --initialize-insecure (root, no password)
+        // brew MariaDB:           mariadb-install-db script
+        if let Some(mysqld) = mariadb_bin("mysqld") {
+            let status = std::process::Command::new(mysqld)
+                .args([
+                    &format!("--datadir={}", datadir.display()),
+                    "--initialize-insecure",
+                ])
+                .status()?;
+            if !status.success() {
+                return Err(crate::Error::ServiceFailed {
+                    name: "mysqld --initialize-insecure".into(),
+                    reason: format!("exit {}", status),
+                });
+            }
+            return Ok(());
+        }
         let tool = mariadb_bin("mariadb-install-db")
             .or_else(|| mariadb_bin("mysql_install_db"))
             .ok_or_else(|| {
-                crate::Error::Config("mariadb-install-db not found — brew install mariadb".into())
+                crate::Error::Config(
+                    "no MySQL/MariaDB server found — `devctl install mysql` or brew install mariadb"
+                        .into(),
+                )
             })?;
         let status = std::process::Command::new(tool)
             .args([
@@ -169,11 +217,30 @@ pub fn init_datadir(paths: &crate::paths::Paths) -> crate::Result<()> {
 }
 
 pub fn start_mysqld(paths: &crate::paths::Paths) -> crate::Result<()> {
-    let bin = mariadb_bin("mariadbd").or_else(|| mariadb_bin("mysqld"))
-        .ok_or_else(|| crate::Error::Config("mariadbd not found — brew install mariadb".into()))?;
+    let bin = mariadb_bin("mariadbd")
+        .or_else(|| mariadb_bin("mysqld"))
+        .ok_or_else(|| {
+            crate::Error::Config(
+                "mysqld not found — `devctl install mysql` or brew install mariadb".into(),
+            )
+        })?;
+
+    let mut args: Vec<String> = vec![format!("--defaults-file={}", paths.my_cnf().display())];
+    // vendored MySQL 8.4 needs --basedir so it finds share/ + lib/plugin/
+    #[cfg(target_os = "macos")]
+    if let Ok(p) = crate::paths::Paths::detect() {
+        let vendored = crate::vendor_mac::find_vendored_bin(&p, "mysql", "mysqld");
+        if Some(&bin) == vendored.as_ref() {
+            if let Some(basedir) = bin.parent().and_then(|b| b.parent()) {
+                args.push(format!("--basedir={}", basedir.display()));
+            }
+        }
+    }
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     crate::service::spawn_daemon(
         bin.to_str().unwrap(),
-        &[&format!("--defaults-file={}", paths.my_cnf().display())],
+        &arg_refs,
         &paths.pid_file("mysqld"),
         &paths.log_file("mysqld"),
     )?;
@@ -181,43 +248,83 @@ pub fn start_mysqld(paths: &crate::paths::Paths) -> crate::Result<()> {
 }
 
 pub fn stop_mysqld(paths: &crate::paths::Paths) -> crate::Result<()> {
+    let pid_file = paths.pid_file("mysqld");
+    if !crate::service::is_running(&pid_file) {
+        let _ = std::fs::remove_file(&pid_file);
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
-        // Windows: mysqladmin over TCP or named pipe
+        // Windows: mysqladmin over TCP or named pipe. If the graceful command
+        // fails or hangs, fall back to the managed PID so Stop All is reliable.
         if let Some(admin) = mariadb_bin("mariadb-admin").or_else(|| mariadb_bin("mysqladmin")) {
             let port = 3306; // TODO: read from config
-            std::process::Command::new(admin)
+            if let Ok(mut child) = std::process::Command::new(admin)
                 .args([
-                    &format!("--port={}", port),
+                    &format!("--port={port}"),
                     "--host=127.0.0.1",
-                    "-u", "root",
+                    "-u",
+                    "root",
                     "shutdown",
                 ])
-                .output()
-                .ok();
-            let _ = std::fs::remove_file(paths.pid_file("mysqld"));
-            return Ok(());
+                .spawn()
+            {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    if !crate::service::is_running(&pid_file) {
+                        let _ = child.wait();
+                        let _ = std::fs::remove_file(&pid_file);
+                        return Ok(());
+                    }
+                    if child.try_wait().ok().flatten().is_some()
+                        || std::time::Instant::now() >= deadline
+                    {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
         }
-        return crate::service::stop_daemon(&paths.pid_file("mysqld"), 10);
+        return crate::service::stop_daemon(&pid_file, 10);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         let sock = paths.run_dir().join("mysql.sock");
         if sock.exists() {
-            if let Some(admin) = mariadb_bin("mariadb-admin").or_else(|| mariadb_bin("mysqladmin")) {
-                std::process::Command::new(admin)
+            if let Some(admin) = mariadb_bin("mariadb-admin").or_else(|| mariadb_bin("mysqladmin"))
+            {
+                if let Ok(mut child) = std::process::Command::new(admin)
                     .args([
                         &format!("--socket={}", sock.display()),
-                        "-u", "root",
+                        "-u",
+                        "root",
                         "shutdown",
                     ])
-                    .output()
-                    .ok();
-                let _ = std::fs::remove_file(paths.pid_file("mysqld"));
-                return Ok(());
+                    .spawn()
+                {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        if !crate::service::is_running(&pid_file) {
+                            let _ = child.wait();
+                            let _ = std::fs::remove_file(&pid_file);
+                            return Ok(());
+                        }
+                        if child.try_wait().ok().flatten().is_some()
+                            || std::time::Instant::now() >= deadline
+                        {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
             }
         }
-        crate::service::stop_daemon(&paths.pid_file("mysqld"), 10)
+        crate::service::stop_daemon(&pid_file, 10)
     }
 }

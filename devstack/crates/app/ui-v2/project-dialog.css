@@ -1,0 +1,37 @@
+/* Hallmark · component: project dialog · genre: modern-minimal · theme: Cobalt Slate
+ * pre-emit critique: P4 H4 E4 S4 R5 V4
+ * states: default · hover · focus · active · disabled · loading · error · success */
+#add-dialog{width:min(560px,calc(100vw - 32px));padding:0;border:1px solid var(--line-strong);border-radius:var(--r3);background:var(--surface);max-height:calc(100dvh - 32px);overflow-y:auto}
+.project-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s4);padding:var(--s6)}
+.project-dialog-header h2{font:600 24px/1.2 var(--display);letter-spacing:-.035em}
+.project-dialog-header p{color:var(--ink-3);font-size:13px;margin-top:var(--s2)}
+#add-dialog .icon-button{flex:none;width:44px;height:44px;background:transparent;border-color:transparent;font-size:24px}
+#add-dialog #add-form{gap:0}
+.project-dialog-fields{display:flex;flex-direction:column;gap:var(--s5);padding:0 var(--s6) var(--s6)}
+#add-form .project-field{display:flex;flex-direction:column;gap:var(--s2);min-width:0}
+#add-form .project-field label,#add-form .field-label{display:flex;flex-direction:row;align-items:center;gap:var(--s2);min-height:18px;font:500 12px/1.5 var(--body);color:var(--ink-2)}
+#add-form .project-field .optional{margin-left:auto;font-size:11px;font-weight:400;color:var(--ink-3)}
+#add-dialog #add-form input:not([type=checkbox]),#add-dialog .picker-trigger{width:100%;height:44px;min-height:44px;border:1px solid var(--line-strong);border-radius:var(--r1);background:var(--paper);color:var(--ink);padding:0 var(--s3);font:13px var(--body)}
+#add-dialog .picker{display:block;width:100%}#add-dialog .picker-trigger{font-family:var(--mono);font-size:12px}
+#add-dialog .browse-field{align-items:center;gap:var(--s2)}#add-dialog .browse-field input{flex:1;min-width:0}
+#add-dialog .ghost-action,#add-dialog .primary-action{height:44px;min-height:44px;box-shadow:none;font-size:12px}
+#add-dialog .field-help{color:var(--ink-3);font-size:11px;overflow-wrap:anywhere}
+.runtime-fields{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:var(--s4)}
+#add-form .https-setting{position:relative;display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:var(--s4);padding-top:var(--s5);border-top:1px solid var(--line);cursor:pointer;min-height:64px}
+.https-copy{display:flex;flex-direction:column;gap:var(--s1)}.https-copy strong{font-size:13px;font-weight:500;color:var(--ink)}.https-copy small{font:11px/1.5 var(--body);color:var(--ink-3)}
+#add-form .https-setting input{position:absolute;right:0;width:44px;height:44px;opacity:0;cursor:pointer;margin:0;z-index:1}
+#add-form .switch-track{flex:none;width:36px;height:22px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface-3);padding:3px}
+.switch-track::after{content:'';display:block;width:14px;height:14px;border-radius:50%;background:var(--ink-2);transition:transform var(--fast) var(--ease-out)}
+#new-https:checked+.switch-track{background:var(--accent);border-color:var(--accent)}#new-https:checked+.switch-track::after{background:var(--accent-ink);transform:translateX(12px)}
+#new-https:focus-visible+.switch-track{outline:2px solid var(--focus);outline-offset:4px}
+.project-dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);padding:var(--s4) var(--s6);border-top:1px solid var(--line);background:var(--paper)}
+.project-dialog-footer>div{display:flex;gap:var(--s2)}.local-note{font:11px var(--body);color:var(--ink-3)}
+#add-dialog .form-error:empty{display:none}#add-dialog .form-error{padding:var(--s3);border:1px solid var(--danger);border-radius:var(--r1);font-size:12px}
+#add-dialog [aria-invalid=true]{border-color:var(--danger)!important}
+#add-dialog button:active,#add-dialog .is-active{transform:translateY(1px)}
+#add-dialog :disabled{opacity:.5;cursor:not-allowed}#add-dialog [data-loading=true]{cursor:wait}
+#add-dialog [data-state=success]{border-color:var(--ok);color:var(--ok)}
+#add-dialog .is-focus{outline:2px solid var(--focus);outline-offset:2px}
+@media(hover:hover){#add-dialog input:not([type=checkbox]):hover,#add-dialog .picker-trigger:hover,#add-dialog .is-hover{background:var(--surface-2)}#add-dialog .icon-button:hover{background:var(--surface-2)}}
+@media(max-width:440px){.project-dialog-header{padding:var(--s5)}.project-dialog-fields{padding:0 var(--s5) var(--s5)}.project-dialog-footer{padding:var(--s4) var(--s5);justify-content:flex-end}.local-note{display:none}.runtime-fields{gap:var(--s3)}.project-dialog-header h2{font-size:22px}}
+@media(prefers-reduced-motion:reduce){#add-dialog *,#add-dialog *::after{transition:none!important}}

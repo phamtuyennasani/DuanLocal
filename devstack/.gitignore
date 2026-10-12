@@ -1,4 +1,5 @@
 /target
+crates/app/resources/devctl
 **/*.rs.bk
 .DS_Store
 .env

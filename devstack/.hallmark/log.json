@@ -1,6 +1,45 @@
 [
   {
     "date": "2026-10-09",
+    "scope": "whole-app rebuild",
+    "genre": "modern-minimal",
+    "theme": "Cobalt Slate",
+    "macrostructure": "Command Center operational workbench",
+    "enrichment": "none — truthful local runtime surfaces",
+    "brief": "DevStack ui-v2 — standalone modern developer workspace; original UI preserved"
+  },
+  {
+    "date": "2026-10-09",
+    "scope": "whole-app redesign",
+    "genre": "modern-minimal",
+    "theme": "Cobalt",
+    "macrostructure": "Workbench team workspace",
+    "enrichment": "workspace switcher + presence",
+    "brief": "DevStack — team-oriented developer workspace with shared environment context"
+  },
+  {
+    "date": "2026-10-09",
+    "scope": "whole-app redesign",
+    "genre": "modern-minimal",
+    "theme": "Cobalt",
+    "macrostructure": "Workbench command-center",
+    "enrichment": "CSS grid texture + elevated surfaces",
+    "brief": "DevStack — premium professional dashboard controls and PHP selectors"
+  },
+  {
+    "date": "2026-10-09",
+    "scope": "whole-app redesign",
+    "genre": "modern-minimal",
+    "theme": "Terminal",
+    "macrostructure": "Workbench",
+    "tone": "technical",
+    "palette": "oklch dark graphite · phosphor-lime 145°",
+    "type": "Space Grotesk + Inter + JetBrains Mono",
+    "enrichment": "none",
+    "brief": "DevStack Tauri dashboard — workbench layout with operational log dock"
+  },
+  {
+    "date": "2026-10-09",
     "scope": "component-scope (app dashboard)",
     "genre": "modern-minimal",
     "theme": "Cobalt-variant (dark)",

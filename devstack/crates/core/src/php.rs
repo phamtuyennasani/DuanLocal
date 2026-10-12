@@ -12,11 +12,29 @@ pub struct PhpVersion {
     pub ini_dir: PathBuf,
 }
 
-/// Detect installed PHP versions via Homebrew tap shivammathur/php.
-/// Looks for /opt/homebrew/opt/php@X.Y/sbin/php-fpm and /usr/local/opt/php@X.Y/...
-pub fn detect_brew_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<PhpVersion>> {
+/// Detect installed PHP versions. Prefers vendored static binaries
+/// (~/.devstack/vendor/php-X.Y/php-fpm) so a fresh Mac needs no brew;
+/// falls back to brew taps if nothing is vendored.
+#[cfg(target_os = "macos")]
+pub fn detect_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<PhpVersion>> {
     let mut out = Vec::new();
 
+    // vendored static PHP (static-php-cli) — preferred, no brew needed
+    for name in crate::vendor_mac::list_installed(paths) {
+        if let Some(ver) = name.strip_prefix("php-") {
+            if let Some(fpm) = crate::vendor_mac::find_vendored_bin(paths, &name, "php-fpm") {
+                out.push(PhpVersion {
+                    version: ver.to_string(),
+                    fpm_bin: fpm,
+                    ini_dir: paths.php_ini_dir(ver),
+                });
+            }
+        }
+    }
+
+    // Also discover legacy Homebrew PHP versions when present. Vendored builds
+    // remain preferred for a matching version, but all installed versions are
+    // returned so the runtime can start and display every available PHP-FPM.
     for prefix in ["/opt/homebrew", "/usr/local"] {
         let opt = PathBuf::from(prefix).join("opt");
         if !opt.exists() {
@@ -27,7 +45,7 @@ pub fn detect_brew_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<PhpVer
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(ver) = name.strip_prefix("php@") {
                 let fpm = entry.path().join("sbin/php-fpm");
-                if fpm.exists() {
+                if fpm.exists() && !out.iter().any(|php| php.version == ver) {
                     out.push(PhpVersion {
                         version: ver.to_string(),
                         fpm_bin: fpm,
@@ -40,19 +58,50 @@ pub fn detect_brew_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<PhpVer
     Ok(out)
 }
 
-/// Find the php-fpm binary for a specific version.
+/// Back-compat alias used by the app — same thing, clearer name now.
+#[cfg(target_os = "macos")]
+pub fn detect_brew_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<PhpVersion>> {
+    detect_phps(paths)
+}
+
+/// Find the php-fpm binary for a specific version — vendored first, then brew.
+#[cfg(target_os = "macos")]
 pub fn find_php_fpm(version: &str) -> Option<PathBuf> {
+    let paths = crate::paths::Paths::detect().ok()?;
+    if let Some(p) =
+        crate::vendor_mac::find_vendored_bin(&paths, &format!("php-{version}"), "php-fpm")
+    {
+        return Some(p);
+    }
     for prefix in ["/opt/homebrew", "/usr/local"] {
         let fpm = PathBuf::from(format!("{prefix}/opt/php@{version}/sbin/php-fpm"));
         if fpm.exists() {
             return Some(fpm);
         }
     }
-    // also check PATH
-    if let Ok(p) = which::which(format!("php-fpm{version}")) {
-        return Some(p);
-    }
-    None
+    which::which(format!("php-fpm{version}")).ok()
+}
+
+/// Find the php CLI binary for a version (used for `devctl php` + future tooling).
+/// static-php-cli tarball only ships `php-fpm`; fall back to the same binary —
+/// `php-fpm -v` reports the CLI version fine, and sites only need fpm anyway.
+#[cfg(target_os = "macos")]
+pub fn find_php_cli(version: &str) -> Option<PathBuf> {
+    let paths = crate::paths::Paths::detect().ok()?;
+    // vendored layout may or may not ship a separate `php` binary
+    crate::vendor_mac::find_vendored_bin(&paths, &format!("php-{version}"), "php")
+        .or_else(|| {
+            crate::vendor_mac::find_vendored_bin(&paths, &format!("php-{version}"), "php-fpm")
+        })
+        .or_else(|| {
+            for prefix in ["/opt/homebrew", "/usr/local"] {
+                let p = PathBuf::from(format!("{prefix}/opt/php@{version}/bin/php"));
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+            None
+        })
 }
 
 /// Generate php-fpm pool config for a version, ondemand for low RAM.
@@ -97,8 +146,16 @@ php_admin_value[error_log] = {log}.php_errors
         pid = pid.display(),
         log = log.display(),
         sock = sock.display(),
-        user = std::env::var("USER").unwrap_or_else(|_| "www".into()),
-        group = if cfg!(target_os = "macos") { "staff" } else { "www-data" },
+        user = std::env::var("SUDO_USER")
+            .ok()
+            .filter(|u| u != "root" && !u.is_empty())
+            .or_else(|| std::env::var("USER").ok())
+            .unwrap_or_else(|| "www".into()),
+        group = if cfg!(target_os = "macos") {
+            "staff"
+        } else {
+            "www-data"
+        },
         pm = pm,
     );
 
@@ -135,11 +192,9 @@ opcache.memory_consumption = 128
 
 /// Start php-fpm for a given version.
 pub fn start_fpm(version: &str, paths: &crate::paths::Paths) -> crate::Result<()> {
-    let fpm_bin = find_php_fpm(version)
-        .ok_or_else(|| crate::Error::PhpNotInstalled(version.into()))?;
-    let conf = paths
-        .etc_dir()
-        .join(format!("php-fpm-{version}.conf"));
+    let fpm_bin =
+        find_php_fpm(version).ok_or_else(|| crate::Error::PhpNotInstalled(version.into()))?;
+    let conf = paths.etc_dir().join(format!("php-fpm-{version}.conf"));
 
     crate::service::spawn_daemon(
         fpm_bin.to_str().unwrap(),
@@ -159,18 +214,13 @@ pub fn start_fpm(version: &str, paths: &crate::paths::Paths) -> crate::Result<()
 }
 
 pub fn stop_fpm(version: &str, paths: &crate::paths::Paths) -> crate::Result<()> {
-    crate::service::stop_daemon(
-        &paths.pid_file(&format!("php-fpm-{version}")),
-        5,
-    )
+    crate::service::stop_daemon(&paths.pid_file(&format!("php-fpm-{version}")), 5)
 }
 
-/// php -v for a version
+/// `php -v` output first line for a version — vendored or brew.
+#[cfg(target_os = "macos")]
 pub fn php_cli_version(version: &str) -> Option<String> {
-    let bin = PathBuf::from(format!("/opt/homebrew/opt/php@{version}/bin/php"));
-    if !bin.exists() {
-        return None;
-    }
+    let bin = find_php_cli(version)?;
     Command::new(bin)
         .arg("-v")
         .output()
@@ -179,10 +229,25 @@ pub fn php_cli_version(version: &str) -> Option<String> {
         .map(|s| s.lines().next().unwrap_or("").to_string())
 }
 
-/// List vendored PHP versions on Windows: ~/.devstack/vendor/php-*/
-pub fn detect_vendored_phps(_paths: &crate::paths::Paths) -> crate::Result<Vec<String>> {
-    Ok(crate::vendor::list_vendored()
-        .iter()
-        .filter_map(|n| n.strip_prefix("php-").map(|v| v.to_string()))
-        .collect())
+/// List vendored PHP versions: ~/.devstack/vendor/php-*/
+/// Works on both platforms — on macOS these are static-php-cli builds.
+pub fn detect_vendored_phps(paths: &crate::paths::Paths) -> crate::Result<Vec<String>> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(crate::vendor::list_vendored()
+            .iter()
+            .filter_map(|n| n.strip_prefix("php-").map(|v| v.to_string()))
+            .collect())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(crate::vendor_mac::list_installed(paths)
+            .iter()
+            .filter_map(|n| n.strip_prefix("php-").map(|v| v.to_string()))
+            .collect())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Ok(vec![])
+    }
 }

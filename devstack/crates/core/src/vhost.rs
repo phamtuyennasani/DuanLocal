@@ -18,6 +18,9 @@ const VHOST_TEMPLATE: &str = r#"<VirtualHost *:{{http_port}}>
         Require all granted
     </Directory>
 
+    # Laravel-style apps: route non-file requests through index.php
+    FallbackResource /index.php
+
     {{#if php_cgi}}
     # Windows: php-cgi via Action/ScriptAlias. mod_actions supplies a real
     # filesystem SCRIPT_FILENAME (mod_proxy_fcgi sends a proxy:-prefixed one
@@ -93,11 +96,16 @@ impl VhostRenderer {
         let domain = site.domain(&config.tld);
         let cert_dir = paths.certs_dir().join(&domain);
         let docroot = site.root.display().to_string().replace('\\', "/");
+        // The vhost binds the port httpd actually listens on. Per-site public
+        // ports (Site.port) either match the internal Apache bind (public :80
+        // is forwarded by pf) or are an additional >=1024 bind that httpd.conf
+        // also listens on.
+        let http_port = site.port.filter(|p| *p >= 1024).unwrap_or(config.http_port);
 
         let mut ctx = json!({
             "domain": domain,
             "docroot": docroot,
-            "http_port": config.http_port,
+            "http_port": http_port,
             "https": site.https,
             "https_port": config.https_port,
             "cert_path": cert_dir.join("cert.pem").display().to_string().replace('\\', "/"),
@@ -134,7 +142,12 @@ impl VhostRenderer {
     ) -> crate::Result<()> {
         for entry in std::fs::read_dir(paths.vhosts_dir())? {
             let entry = entry?;
-            if entry.path().extension().map(|e| e == "conf").unwrap_or(false) {
+            if entry
+                .path()
+                .extension()
+                .map(|e| e == "conf")
+                .unwrap_or(false)
+            {
                 std::fs::remove_file(entry.path())?;
             }
         }

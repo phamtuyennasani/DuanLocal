@@ -75,14 +75,25 @@ pub fn is_running(pid_file: &std::path::Path) -> bool {
     let Ok(pid) = text.trim().parse::<i32>() else {
         return false;
     };
-    pid_alive(pid)
+    pid > 1 && pid_alive(pid)
 }
 
 #[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
+    use nix::errno::Errno;
     use nix::sys::signal::kill;
+    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
     use nix::unistd::Pid;
-    kill(Pid::from_raw(pid), None).is_ok()
+
+    let process = Pid::from_raw(pid);
+    match waitpid(process, Some(WaitPidFlag::WNOHANG)) {
+        // Reap managed children that exited after SIGTERM so they do not remain
+        // as zombies and make status checks appear stuck.
+        Ok(WaitStatus::Exited(_, _) | WaitStatus::Signaled(_, _, _)) => false,
+        Ok(_) => true,
+        // Apache daemonizes and is no longer our child; test those normally.
+        Err(Errno::ECHILD) | Err(_) => kill(process, None).is_ok(),
+    }
 }
 
 #[cfg(windows)]
@@ -105,15 +116,22 @@ pub fn stop_daemon(pid_file: &std::path::Path, timeout_secs: u64) -> crate::Resu
 
     let text = std::fs::read_to_string(pid_file)
         .map_err(|_| crate::Error::ServiceNotRunning(pid_file.display().to_string()))?;
-    let pid: i32 = text.trim().parse().map_err(|_| {
-        crate::Error::Config(format!("bad pid in {}", pid_file.display()))
-    })?;
+    let pid: i32 = text
+        .trim()
+        .parse()
+        .map_err(|_| crate::Error::Config(format!("bad pid in {}", pid_file.display())))?;
+    if pid <= 1 {
+        return Err(crate::Error::Config(format!(
+            "refusing to stop unsafe pid {pid} from {}",
+            pid_file.display()
+        )));
+    }
     let pid = Pid::from_raw(pid);
 
     kill(pid, Signal::SIGTERM).ok();
 
     for _ in 0..(timeout_secs * 10) {
-        if kill(pid, None).is_err() {
+        if !pid_alive(pid.as_raw()) {
             let _ = std::fs::remove_file(pid_file);
             return Ok(());
         }

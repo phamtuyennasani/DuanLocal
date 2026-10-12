@@ -15,8 +15,9 @@ pub trait PlatformProvider {
     /// Where mariadbd lives.
     fn mariadbd_bin(&self) -> Option<PathBuf>;
 
-    /// Write the wildcard-DNS or hosts-file plumbing.
-    /// May require elevation — caller decides.
+    /// Write user-owned wildcard-DNS configuration or hosts-file plumbing.
+    /// macOS system resolver configuration is applied separately through the
+    /// native administrator flow, never through this provider interface.
     fn setup_dns(&self, tld: &str, config_path: &PathBuf) -> crate::Result<()>;
     /// Check whether DNS routing is in place.
     fn check_dns(&self, tld: &str) -> bool;
@@ -54,7 +55,7 @@ impl PlatformProvider for MacProvider {
         crate::mysql::mariadbd_path()
     }
     fn setup_dns(&self, tld: &str, config_path: &PathBuf) -> crate::Result<()> {
-        crate::dns::setup_resolver(tld, config_path)
+        crate::dns::write_dnsmasq_conf(tld, config_path)
     }
     fn check_dns(&self, tld: &str) -> bool {
         crate::dns::check_resolver(tld)
@@ -106,10 +107,7 @@ impl PlatformProvider for WinProvider {
 /// Deterministic port for php-cgi of a version: 9000 + major*100 + minor.
 /// "8.3" → 9083, "8.4" → 9084, "7.4" → 9074.
 pub fn php_cgi_port(version: &str) -> u16 {
-    let parts: Vec<u16> = version
-        .split('.')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let parts: Vec<u16> = version.split('.').filter_map(|s| s.parse().ok()).collect();
     match parts.as_slice() {
         [major, minor, ..] => 9000 + major * 100 + minor,
         [major] => 9000 + major * 100,

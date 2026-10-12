@@ -10,6 +10,7 @@ pub enum Error {
     ServiceFailed { name: String, reason: String },
     PhpNotInstalled(String),
     DnsSetupRequired,
+    ElevationFailed(String),
     Io(io::Error),
     Toml(toml::de::Error),
     TomlSer(toml::ser::Error),
@@ -26,7 +27,11 @@ impl fmt::Display for Error {
             Self::ServiceNotRunning(n) => write!(f, "service not running: {n}"),
             Self::ServiceFailed { name, reason } => write!(f, "service {name} failed: {reason}"),
             Self::PhpNotInstalled(v) => write!(f, "PHP {v} not installed"),
-            Self::DnsSetupRequired => write!(f, "DNS not configured — run `sudo devctl setup` first"),
+            Self::DnsSetupRequired => write!(
+                f,
+                "DNS chưa được cấu hình — mở DevStack và chọn Hoàn tất thiết lập"
+            ),
+            Self::ElevationFailed(m) => write!(f, "administrator setup failed: {m}"),
             Self::Io(e) => write!(f, "io: {e}"),
             Self::Toml(e) => write!(f, "toml: {e}"),
             Self::TomlSer(e) => write!(f, "toml ser: {e}"),

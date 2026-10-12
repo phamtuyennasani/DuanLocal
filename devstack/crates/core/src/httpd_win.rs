@@ -10,7 +10,10 @@ pub fn httpd_bin() -> Option<PathBuf> {
 
 /// Vendor Apache module dir: ~/.devstack/vendor/httpd/modules/
 fn module_dir() -> Option<PathBuf> {
-    let root = crate::paths::Paths::detect().ok()?.root.join("vendor/httpd/modules");
+    let root = crate::paths::Paths::detect()
+        .ok()?
+        .root
+        .join("vendor/httpd/modules");
     root.exists().then_some(root)
 }
 
@@ -20,8 +23,9 @@ fn module_dir() -> Option<PathBuf> {
 /// `SetHandler "proxy:fcgi://127.0.0.1:PORT"` which this config serves.
 pub fn write_httpd_conf(paths: &crate::paths::Paths, http_port: u16) -> crate::Result<()> {
     let vendor_root = paths.root.join("vendor/httpd");
-    let mod_dir = module_dir()
-        .ok_or_else(|| crate::Error::Config("vendored httpd not found — run `devctl install httpd`".into()))?;
+    let mod_dir = module_dir().ok_or_else(|| {
+        crate::Error::Config("vendored httpd not found — run `devctl install httpd`".into())
+    })?;
 
     // Windows uses winnt MPM — compiled into httpd.exe by ApacheLounge, so no
     // LoadModule line is needed. We drive php-cgi via Action/ScriptAlias
@@ -35,8 +39,8 @@ pub fn write_httpd_conf(paths: &crate::paths::Paths, http_port: u16) -> crate::R
         "mod_authz_host.so",
         "mod_alias.so",
         "mod_rewrite.so",
-        "mod_actions.so",         // ← Action directive for php-cgi
-        "mod_cgi.so",             // ← executes php-cgi.exe per request
+        "mod_actions.so", // ← Action directive for php-cgi
+        "mod_cgi.so",     // ← executes php-cgi.exe per request
         "mod_ssl.so",
         "mod_socache_shmcb.so",
         "mod_setenvif.so",
@@ -131,9 +135,17 @@ Include "{vhosts}/*.conf"
         vendor_root = vendor_root.display().to_string().replace('\\', "/"),
         http_port = http_port,
         loads = loads,
-        docroot = paths.sites_root_default().display().to_string().replace('\\', "/"),
+        docroot = paths
+            .sites_root_default()
+            .display()
+            .to_string()
+            .replace('\\', "/"),
         logs = paths.logs_dir().display().to_string().replace('\\', "/"),
-        pid = paths.pid_file("httpd").display().to_string().replace('\\', "/"),
+        pid = paths
+            .pid_file("httpd")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
         vhosts = paths.vhosts_dir().display().to_string().replace('\\', "/"),
         aliases = aliases,
     );
@@ -143,8 +155,9 @@ Include "{vhosts}/*.conf"
 }
 
 pub fn start_httpd(paths: &crate::paths::Paths) -> crate::Result<()> {
-    let httpd = httpd_bin()
-        .ok_or_else(|| crate::Error::Config("vendored httpd not found — `devctl install httpd`".into()))?;
+    let httpd = httpd_bin().ok_or_else(|| {
+        crate::Error::Config("vendored httpd not found — `devctl install httpd`".into())
+    })?;
     // Run httpd in the foreground (no -k start): -k installs/controls a Windows
     // service and returns immediately, which would store the wrong pid.
     crate::service::spawn_daemon(

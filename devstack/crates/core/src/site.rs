@@ -11,6 +11,10 @@ pub struct Site {
     pub root: PathBuf,
     /// PHP version, e.g. "8.3"
     pub php: String,
+    /// Per-site HTTP port override — None uses the global config.http_port.
+    /// Lets sites sit on their own port (api.test:9000 vs blog.test:80).
+    #[serde(default)]
+    pub port: Option<u16>,
     /// Enable HTTPS via mkcert
     #[serde(default)]
     pub https: bool,
@@ -46,6 +50,14 @@ impl SiteRegistry {
     }
 
     pub fn add(&mut self, site: Site) -> crate::Result<()> {
+        if let Some(port) = site.port {
+            if port < 1024 {
+                return Err(crate::Error::Config(
+                    "custom site ports must be 1024 or higher; use the default public port for 80"
+                        .into(),
+                ));
+            }
+        }
         if self.sites.contains_key(&site.name) {
             return Err(crate::Error::SiteExists(site.name.clone()));
         }

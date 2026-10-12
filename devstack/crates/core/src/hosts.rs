@@ -27,34 +27,33 @@ pub fn add_site(name: &str, tld: &str) -> crate::Result<()> {
     let domain = format!("{name}.{tld}");
     let line = format!("127.0.0.1 {domain} www.{domain}\n");
 
-    let new = if let (Some(start), Some(end)) =
-        (content.find(MARKER_START), content.find(MARKER_END))
-    {
-        // block exists — insert or replace inside it
-        let block_start = start + MARKER_START.len();
-        let block_end = end;
-        let block = &content[block_start..block_end];
+    let new =
+        if let (Some(start), Some(end)) = (content.find(MARKER_START), content.find(MARKER_END)) {
+            // block exists — insert or replace inside it
+            let block_start = start + MARKER_START.len();
+            let block_end = end;
+            let block = &content[block_start..block_end];
 
-        // dedupe: remove any existing line for this domain
-        let mut new_block = String::new();
-        for l in block.lines() {
-            if !l.contains(&domain) {
-                new_block.push_str(l);
-                new_block.push('\n');
+            // dedupe: remove any existing line for this domain
+            let mut new_block = String::new();
+            for l in block.lines() {
+                if !l.contains(&domain) {
+                    new_block.push_str(l);
+                    new_block.push('\n');
+                }
             }
-        }
-        new_block.push_str(&line);
-        format!(
-            "{}{}{}{}",
-            &content[..start],
-            MARKER_START,
-            new_block,
-            &content[block_end..]
-        )
-    } else {
-        // no block yet — append
-        format!("{content}\n{MARKER_START}\n{line}{MARKER_END}\n")
-    };
+            new_block.push_str(&line);
+            format!(
+                "{}{}{}{}",
+                &content[..start],
+                MARKER_START,
+                new_block,
+                &content[block_end..]
+            )
+        } else {
+            // no block yet — append
+            format!("{content}\n{MARKER_START}\n{line}{MARKER_END}\n")
+        };
 
     std::fs::write(&path, new).map_err(|e| {
         crate::Error::Config(format!(
@@ -82,8 +81,5 @@ pub fn remove_site(name: &str, tld: &str) -> crate::Result<()> {
 
 /// Flush Windows DNS cache after hosts changes.
 pub fn flush_dns() {
-    Command::new("ipconfig")
-        .args(["/flushdns"])
-        .output()
-        .ok();
+    Command::new("ipconfig").args(["/flushdns"]).output().ok();
 }
